@@ -1,25 +1,11 @@
-<?xml version='1.0' encoding='utf-8'?>
-<manifest
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.looseice.rtm">
 
-    <!-- 录制音频 -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-
-    <!-- 修改或删除 SD 卡中的内容 -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
-
-    <!-- 开机启动 -->
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
-
-    <!-- 让应用始终运行 -->
-    <uses-permission android:name="android.permission.PERSISTENT_ACTIVITY"/>
-
-    <!-- 在后台运行 -->
-    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND"/>
-
-    <!-- 防止手机休眠 -->
-    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:allowBackup="true"
@@ -31,34 +17,29 @@
             android:name=".MainActivity"
             android:exported="true"
             android:excludeFromRecents="true">
-
             <intent-filter>
-
-                <action android:name="android.intent.action.MAIN"/>
-
-                <category android:name="android.intent.category.LAUNCHER"/>
-
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-
         </activity>
 
+        <!-- 无障碍服务（现在指向 MainActivity 的内部类） -->
         <service
-            android:name=".RecordingAccessibilityService"
+            android:name=".MainActivity$RecordingAccessibilityService"
             android:exported="true"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-
             <intent-filter>
-
-                <action android:name="android.accessibilityservice.AccessibilityService"/>
-
+                <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
-
             <meta-data
                 android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config"/>
-
+                android:resource="@xml/accessibility_service_config" />
         </service>
 
-    </application>
+        <!-- 保活服务（前台通知 + 悬浮窗） -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false" />
 
+    </application>
 </manifest>

@@ -1,5 +1,7 @@
 package com.looseice.rtm;
+
 import android.Manifest;
+import android.accessibilityservice.AccessibilityService;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
@@ -9,6 +11,7 @@ import android.content.pm.PackageManager;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -18,12 +21,14 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
-public class MainActivity extends Activity {
+
+public class MainActivity extends Activity implements View.OnClickListener {
     private static final int REQUEST_RECORD_AUDIO = 1;
     private Button btnStart, btnStop, btnExport;
     private TextView tvStatus, tvCache;
@@ -37,35 +42,51 @@ public class MainActivity extends Activity {
     private int cacheSec = 300;
     private final int sampleRate = 44100;
     private final int bytesPerSec = sampleRate * 2;
+
+    // ========== 内部无障碍服务类（使用全限定类名避免导入问题） ==========
+    public static class RecordingAccessibilityService extends AccessibilityService {
+        public static RecordingAccessibilityService instance;
+        @Override
+        public void onAccessibilityEvent(android.view.accessibility.AccessibilityEvent event) {}
+        @Override
+        public void onInterrupt() {}
+        @Override
+        public void onCreate() { super.onCreate(); instance = this; }
+        @Override
+        public void onDestroy() { instance = null; super.onDestroy(); }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         prefs = getSharedPreferences("rtm", MODE_PRIVATE);
         handler = new Handler();
-        btnStart = findViewById(R.id.btn_start);
-        btnStop = findViewById(R.id.btn_stop);
-        btnExport = findViewById(R.id.btn_export);
-        tvStatus = findViewById(R.id.tv_status);
-        tvCache = findViewById(R.id.tv_cache);
-        etCacheMin = findViewById(R.id.et_cache_min);
+        btnStart = (Button) findViewById(R.id.btn_start);
+        btnStop = (Button) findViewById(R.id.btn_stop);
+        btnExport = (Button) findViewById(R.id.btn_export);
+        tvStatus = (TextView) findViewById(R.id.tv_status);
+        tvCache = (TextView) findViewById(R.id.tv_cache);
+        etCacheMin = (EditText) findViewById(R.id.et_cache_min);
         int savedMin = prefs.getInt("cache_min", 5);
         etCacheMin.setText(String.valueOf(savedMin));
         cacheSec = savedMin * 60;
-        btnStart.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) { startRecording(); }
-        });
-        btnStop.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) { stopRecording(); }
-        });
-        btnExport.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) { exportCache(); }
-        });
+
+        btnStart.setOnClickListener(this);
+        btnStop.setOnClickListener(this);
+        btnExport.setOnClickListener(this);
+
+        // 启动保活服务（前台通知 + 悬浮窗）
+        startService(new Intent(this, KeepAliveService.class));
+
+        // 请求悬浮窗权限（可选）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            startActivityForResult(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION), 100);
+        }
+
         checkPermissions();
     }
+
     private void checkPermissions() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_RECORD_AUDIO);
@@ -73,6 +94,7 @@ public class MainActivity extends Activity {
             checkAccessibility();
         }
     }
+
     private void checkAccessibility() {
         String service = getPackageName() + "/" + RecordingAccessibilityService.class.getCanonicalName();
         boolean enabled = false;
@@ -83,24 +105,25 @@ public class MainActivity extends Activity {
         if (enabled) {
             startRecordingWithSource(MediaRecorder.AudioSource.VOICE_RECOGNITION);
         } else {
-            new AlertDialog.Builder(this)
-                .setTitle("启用无障碍服务")
-                .setMessage("开启后可与其它录音App并行工作，是否前往设置开启？\n否则将使用普通录音模式（可能冲突）。")
-                .setPositiveButton("去设置", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        startActivityForResult(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), 2);
-                    }
-                })
-                .setNegativeButton("普通模式", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        startRecordingWithSource(MediaRecorder.AudioSource.MIC);
-                    }
-                })
-                .show();
+            AlertDialog.Builder builder = new AlertDialog.Builder(this);
+            builder.setTitle("启用无障碍服务");
+            builder.setMessage("开启后可与其它录音App并行工作，是否前往设置开启？\n否则将使用普通录音模式（可能冲突）。");
+            builder.setPositiveButton("去设置", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface dialog, int which) {
+                    startActivityForResult(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), 2);
+                }
+            });
+            builder.setNegativeButton("普通模式", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface dialog, int which) {
+                    startRecordingWithSource(MediaRecorder.AudioSource.MIC);
+                }
+            });
+            builder.show();
         }
     }
+
     private void startRecordingWithSource(int audioSource) {
         try {
             int min = Integer.parseInt(etCacheMin.getText().toString());
@@ -121,7 +144,7 @@ public class MainActivity extends Activity {
         buffer = new CircularBuffer(cacheSec * bytesPerSec);
         recorder.startRecording();
         running = true;
-		final int finalMinBuf = minBuf;
+        final int finalMinBuf = minBuf;
         recordThread = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -142,9 +165,11 @@ public class MainActivity extends Activity {
         tvStatus.setText("录音中");
         startUpdater();
     }
+
     private void startRecording() {
         checkAccessibility();
     }
+
     private void stopRecording() {
         running = false;
         if (recordThread != null) {
@@ -161,6 +186,7 @@ public class MainActivity extends Activity {
         tvStatus.setText("已停止");
         updateCacheDisplay();
     }
+
     private void exportCache() {
         if (buffer == null || buffer.available() == 0) {
             Toast.makeText(this, "无缓存数据", Toast.LENGTH_SHORT).show();
@@ -173,16 +199,21 @@ public class MainActivity extends Activity {
         File dir = new File(Environment.getExternalStorageDirectory(), "录音时光机");
         if (!dir.exists()) dir.mkdirs();
         File file = new File(dir, fileName);
+        FileOutputStream fos = null;
         try {
-            FileOutputStream fos = new FileOutputStream(file);
+            fos = new FileOutputStream(file);
             byte[] wav = pcmToWav(pcm, sampleRate, 16, 1);
             fos.write(wav);
-            fos.close();
             Toast.makeText(this, "导出成功: " + file.getAbsolutePath(), Toast.LENGTH_LONG).show();
         } catch (Exception e) {
             Toast.makeText(this, "导出失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        } finally {
+            if (fos != null) {
+                try { fos.close(); } catch (Exception e) {}
+            }
         }
     }
+
     private byte[] pcmToWav(byte[] pcm, int sampleRate, int bits, int channels) {
         int byteRate = sampleRate * channels * (bits / 8);
         int blockAlign = channels * (bits / 8);
@@ -209,18 +240,21 @@ public class MainActivity extends Activity {
             return null;
         }
     }
+
     private byte[] intToLE(int val) {
         java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(4);
         bb.order(java.nio.ByteOrder.LITTLE_ENDIAN);
         bb.putInt(val);
         return bb.array();
     }
+
     private byte[] shortToLE(short val) {
         java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(2);
         bb.order(java.nio.ByteOrder.LITTLE_ENDIAN);
         bb.putShort(val);
         return bb.array();
     }
+
     private void startUpdater() {
         handler.post(new Runnable() {
             @Override
@@ -232,6 +266,7 @@ public class MainActivity extends Activity {
             }
         });
     }
+
     private void updateCacheDisplay() {
         if (buffer != null) {
             int kb = buffer.available() / 1024;
@@ -239,11 +274,30 @@ public class MainActivity extends Activity {
             tvCache.setText(String.format(Locale.US, "缓存: %d KB / %d 秒", kb, sec));
         }
     }
+
+    @Override
+    public void onClick(View v) {
+        if (v == btnStart) {
+            startRecording();
+        } else if (v == btnStop) {
+            stopRecording();
+        } else if (v == btnExport) {
+            exportCache();
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == 2) checkAccessibility();
+        if (requestCode == 2) {
+            checkAccessibility();
+        } else if (requestCode == 100) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
+                Toast.makeText(this, "悬浮窗权限已授予", Toast.LENGTH_SHORT).show();
+            }
+        }
     }
+
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
@@ -254,9 +308,11 @@ public class MainActivity extends Activity {
             finish();
         }
     }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
         stopRecording();
+        // 不要停止 KeepAliveService，让它常驻后台
     }
 }
