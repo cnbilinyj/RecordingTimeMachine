@@ -1,0 +1,2 @@
+include ':app'
+rootProject.name = "录音时光机"
