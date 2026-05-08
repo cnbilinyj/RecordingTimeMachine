@@ -1,20 +1,21 @@
 package com.looseice.rtm;
 
 import android.Manifest;
-import android.accessibilityservice.AccessibilityService;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ComponentName;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.media.AudioFormat;
-import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
+import android.os.IBinder;
+import android.os.PowerManager;   // 导入 PowerManager
 import android.provider.Settings;
 import android.view.View;
 import android.widget.Button;
@@ -22,72 +23,96 @@ import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
-
 public class MainActivity extends Activity implements View.OnClickListener {
     private static final int REQUEST_RECORD_AUDIO = 1;
     private Button btnStart, btnStop, btnExport;
     private TextView tvStatus, tvCache;
     private EditText etCacheMin;
-    private AudioRecord recorder;
-    private CircularBuffer buffer;
-    private Thread recordThread;
-    private volatile boolean running = false;
+    private KeepAliveService recordingService;
+    private boolean isBound = false;
     private SharedPreferences prefs;
-    private Handler handler;
-    private int cacheSec = 300;
-    private final int sampleRate = 44100;
-    private final int bytesPerSec = sampleRate * 2;
 
-    // ========== 内部无障碍服务类（使用全限定类名避免导入问题） ==========
-    public static class RecordingAccessibilityService extends AccessibilityService {
-        public static RecordingAccessibilityService instance;
+    private ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
-        public void onAccessibilityEvent(android.view.accessibility.AccessibilityEvent event) {}
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            KeepAliveService.LocalBinder binder = (KeepAliveService.LocalBinder) service;
+            recordingService = binder.getService();
+            isBound = true;
+            recordingService.setOnCacheUpdateListener((kb, seconds) -> {
+                tvCache.setText(String.format("缓存: %d KB / %d 秒", kb, seconds));
+                if (recordingService.isRecording()) {
+                    tvStatus.setText("录音中");
+                } else {
+                    tvStatus.setText("已停止");
+                }
+            });
+            if (recordingService.isRecording()) {
+                btnStart.setEnabled(false);
+                btnStop.setEnabled(true);
+                tvStatus.setText("录音中");
+                tvCache.setText(String.format("缓存: %d KB / %d 秒",
+                        recordingService.getCacheKB(), recordingService.getCacheSeconds()));
+            } else {
+                btnStart.setEnabled(true);
+                btnStop.setEnabled(false);
+                tvStatus.setText("已停止");
+            }
+        }
+
         @Override
-        public void onInterrupt() {}
-        @Override
-        public void onCreate() { super.onCreate(); instance = this; }
-        @Override
-        public void onDestroy() { instance = null; super.onDestroy(); }
-    }
+        public void onServiceDisconnected(ComponentName name) {
+            recordingService = null;
+            isBound = false;
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         prefs = getSharedPreferences("rtm", MODE_PRIVATE);
-        handler = new Handler();
-        btnStart = (Button) findViewById(R.id.btn_start);
-        btnStop = (Button) findViewById(R.id.btn_stop);
-        btnExport = (Button) findViewById(R.id.btn_export);
-        tvStatus = (TextView) findViewById(R.id.tv_status);
-        tvCache = (TextView) findViewById(R.id.tv_cache);
-        etCacheMin = (EditText) findViewById(R.id.et_cache_min);
+
+        btnStart = findViewById(R.id.btn_start);
+        btnStop = findViewById(R.id.btn_stop);
+        btnExport = findViewById(R.id.btn_export);
+        tvStatus = findViewById(R.id.tv_status);
+        tvCache = findViewById(R.id.tv_cache);
+        etCacheMin = findViewById(R.id.et_cache_min);
+
         int savedMin = prefs.getInt("cache_min", 5);
         etCacheMin.setText(String.valueOf(savedMin));
-        cacheSec = savedMin * 60;
 
         btnStart.setOnClickListener(this);
         btnStop.setOnClickListener(this);
         btnExport.setOnClickListener(this);
 
-        // 启动保活服务（前台通知 + 悬浮窗）
-        startService(new Intent(this, KeepAliveService.class));
+        Intent serviceIntent = new Intent(this, KeepAliveService.class);
+        startService(serviceIntent);
+        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
 
-        // 请求悬浮窗权限（可选）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             startActivityForResult(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION), 100);
         }
 
+        // 引导关闭电池优化（可选）
+        requestIgnoreBatteryOptimizations();
+
         checkPermissions();
     }
 
+    // 引导用户关闭电池优化（API 23+）
+    private void requestIgnoreBatteryOptimizations() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                Intent intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                startActivity(intent);
+            }
+        }
+    }
+
     private void checkPermissions() {
+        // 删除 Android 13+ 通知权限处理，因为编译版本 28 不支持
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_RECORD_AUDIO);
         } else {
@@ -96,193 +121,52 @@ public class MainActivity extends Activity implements View.OnClickListener {
     }
 
     private void checkAccessibility() {
-        String service = getPackageName() + "/" + RecordingAccessibilityService.class.getCanonicalName();
+        String service = getPackageName() + "/" + RecordingAccessibilityService.class.getName();
         boolean enabled = false;
         try {
             String enabledServices = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
             enabled = enabledServices != null && enabledServices.contains(service);
         } catch (Exception e) {}
         if (enabled) {
-            startRecordingWithSource(MediaRecorder.AudioSource.VOICE_RECOGNITION);
+            if (isBound && recordingService != null && !recordingService.isRecording()) {
+                recordingService.startRecording(MediaRecorder.AudioSource.VOICE_RECOGNITION);
+                btnStart.setEnabled(false);
+                btnStop.setEnabled(true);
+            }
         } else {
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
             builder.setTitle("启用无障碍服务");
             builder.setMessage("开启后可与其它录音App并行工作，是否前往设置开启？\n否则将使用普通录音模式（可能冲突）。");
-            builder.setPositiveButton("去设置", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    startActivityForResult(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), 2);
-                }
-            });
-            builder.setNegativeButton("普通模式", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    startRecordingWithSource(MediaRecorder.AudioSource.MIC);
+            builder.setPositiveButton("去设置", (dialog, which) -> startActivityForResult(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), 2));
+            builder.setNegativeButton("普通模式", (dialog, which) -> {
+                if (isBound && recordingService != null && !recordingService.isRecording()) {
+                    recordingService.startRecording(MediaRecorder.AudioSource.MIC);
+                    btnStart.setEnabled(false);
+                    btnStop.setEnabled(true);
                 }
             });
             builder.show();
         }
     }
 
-    private void startRecordingWithSource(int audioSource) {
-        try {
-            int min = Integer.parseInt(etCacheMin.getText().toString());
-            if (min < 1) min = 1;
-            if (min > 60) min = 60;
-            cacheSec = min * 60;
-            prefs.edit().putInt("cache_min", min).apply();
-        } catch (Exception e) {}
-        int channelConfig = AudioFormat.CHANNEL_IN_MONO;
-        int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
-        int minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat);
-        if (minBuf < bytesPerSec) minBuf = bytesPerSec;
-        recorder = new AudioRecord(audioSource, sampleRate, channelConfig, audioFormat, minBuf);
-        if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
-            Toast.makeText(this, "录音初始化失败", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        buffer = new CircularBuffer(cacheSec * bytesPerSec);
-        recorder.startRecording();
-        running = true;
-        final int finalMinBuf = minBuf;
-        recordThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                byte[] buf = new byte[finalMinBuf];
-                while (running) {
-                    int len = recorder.read(buf, 0, buf.length);
-                    if (len > 0) {
-                        byte[] data = new byte[len];
-                        System.arraycopy(buf, 0, data, 0, len);
-                        buffer.write(data);
-                    }
-                }
-            }
-        });
-        recordThread.start();
-        btnStart.setEnabled(false);
-        btnStop.setEnabled(true);
-        tvStatus.setText("录音中");
-        startUpdater();
-    }
-
-    private void startRecording() {
-        checkAccessibility();
-    }
-
-    private void stopRecording() {
-        running = false;
-        if (recordThread != null) {
-            try { recordThread.join(100); } catch (InterruptedException e) {}
-            recordThread = null;
-        }
-        if (recorder != null) {
-            recorder.stop();
-            recorder.release();
-            recorder = null;
-        }
-        btnStart.setEnabled(true);
-        btnStop.setEnabled(false);
-        tvStatus.setText("已停止");
-        updateCacheDisplay();
-    }
-
-    private void exportCache() {
-        if (buffer == null || buffer.available() == 0) {
-            Toast.makeText(this, "无缓存数据", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        byte[] pcm = buffer.readAll();
-        if (pcm == null || pcm.length == 0) return;
-        String fileName = "sc_" + new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(new Date())
-                + "_" + (pcm.length / bytesPerSec) + "s.wav";
-        File dir = new File(Environment.getExternalStorageDirectory(), "录音时光机");
-        if (!dir.exists()) dir.mkdirs();
-        File file = new File(dir, fileName);
-        FileOutputStream fos = null;
-        try {
-            fos = new FileOutputStream(file);
-            byte[] wav = pcmToWav(pcm, sampleRate, 16, 1);
-            fos.write(wav);
-            Toast.makeText(this, "导出成功: " + file.getAbsolutePath(), Toast.LENGTH_LONG).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "导出失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-        } finally {
-            if (fos != null) {
-                try { fos.close(); } catch (Exception e) {}
-            }
-        }
-    }
-
-    private byte[] pcmToWav(byte[] pcm, int sampleRate, int bits, int channels) {
-        int byteRate = sampleRate * channels * (bits / 8);
-        int blockAlign = channels * (bits / 8);
-        int dataSize = pcm.length;
-        int totalSize = 36 + dataSize;
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-        try {
-            out.write("RIFF".getBytes());
-            out.write(intToLE(totalSize));
-            out.write("WAVE".getBytes());
-            out.write("fmt ".getBytes());
-            out.write(intToLE(16));
-            out.write(shortToLE((short) 1));
-            out.write(shortToLE((short) channels));
-            out.write(intToLE(sampleRate));
-            out.write(intToLE(byteRate));
-            out.write(shortToLE((short) blockAlign));
-            out.write(shortToLE((short) bits));
-            out.write("data".getBytes());
-            out.write(intToLE(dataSize));
-            out.write(pcm);
-            return out.toByteArray();
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private byte[] intToLE(int val) {
-        java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(4);
-        bb.order(java.nio.ByteOrder.LITTLE_ENDIAN);
-        bb.putInt(val);
-        return bb.array();
-    }
-
-    private byte[] shortToLE(short val) {
-        java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(2);
-        bb.order(java.nio.ByteOrder.LITTLE_ENDIAN);
-        bb.putShort(val);
-        return bb.array();
-    }
-
-    private void startUpdater() {
-        handler.post(new Runnable() {
-            @Override
-            public void run() {
-                if (running) {
-                    updateCacheDisplay();
-                    handler.postDelayed(this, 1000);
-                }
-            }
-        });
-    }
-
-    private void updateCacheDisplay() {
-        if (buffer != null) {
-            int kb = buffer.available() / 1024;
-            int sec = buffer.available() / bytesPerSec;
-            tvCache.setText(String.format(Locale.US, "缓存: %d KB / %d 秒", kb, sec));
-        }
-    }
-
     @Override
     public void onClick(View v) {
-        if (v == btnStart) {
-            startRecording();
-        } else if (v == btnStop) {
-            stopRecording();
-        } else if (v == btnExport) {
-            exportCache();
+        int id = v.getId();
+        if (id == R.id.btn_start) {
+            checkAccessibility();
+        } else if (id == R.id.btn_stop) {
+            if (isBound && recordingService != null) {
+                recordingService.stopRecording();
+                btnStart.setEnabled(true);
+                btnStop.setEnabled(false);
+                tvStatus.setText("已停止");
+            }
+        } else if (id == R.id.btn_export) {
+            if (isBound && recordingService != null) {
+                recordingService.exportCache();
+            } else {
+                Toast.makeText(this, "服务未就绪", Toast.LENGTH_SHORT).show();
+            }
         }
     }
 
@@ -312,7 +196,9 @@ public class MainActivity extends Activity implements View.OnClickListener {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        stopRecording();
-        // 不要停止 KeepAliveService，让它常驻后台
+        if (isBound) {
+            unbindService(serviceConnection);
+            isBound = false;
+        }
     }
 }
