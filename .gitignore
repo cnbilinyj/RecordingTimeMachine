@@ -1,1 +1,88 @@
-/build
+# 编译输出
+app/build/
+build/
+*/build/
+*.apk
+*.aab
+*.dex
+*.class
+*.lock
+
+# Gradle
+.gradle/
+gradle-app.setting
+gradle/wrapper/gradle-wrapper.jar
+
+.gradle/
+gradle/
+gradlew
+gradlew.bat
+
+# 本地配置文件
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# IDE 文件
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+
+# 系统文件
+.DS_Store
+Thumbs.db
+*.swp
+*~
+*.log
+
+# 临时文件
+*.tmp
+*.temp
+*.cache
+*.lock
+*.pid
+
+# 应用签名
+/release/
+/signing/
+
+# 混淆产生的文件
+proguard/
+*.mapping
+*.seeds
+*.usage
+
+# 资源索引
+/app/src/main/res/values/attrs.xml  # 如果自动生成则忽略
+/R.txt
+/public.txt
+
+# NDK 相关
+*.so
+*.dylib
+*.dll
+obj/
+libs/
+
+# 测试覆盖率
+jacoco/
+/test-output/
+
+# 备份文件
+*.bak
+*.orig
+*.rej
+
+# 用户自定义（根据实际项目可能产生）
+/captures/
+/outputs/
+/intermediates/
+/generated/
+/tmp/
+.filelist.txt
