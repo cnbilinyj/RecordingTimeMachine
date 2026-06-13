@@ -133,48 +133,75 @@ public class KeepAliveService extends Service {
     }
 
     // ---------- 录音控制方法（供 Activity 调用）----------
-    public void startRecording(int audioSource) {
+    
+    /**
+     * 根据指定模式启动录音
+     * @param mode 录音模式：MODE_STANDARD / MODE_ACCESSIBILITY / MODE_SCRCPY
+     * @param audioSource 音频源（仅传统模式使用）
+     */
+    public void startRecordingByMode(int mode, int audioSource) {
         if (running) return;
-
-        // 优先尝试 Scrcpy + FFmpeg 模式（不占用音频通道）
-        if (useScrcpyMode) {
-            scrcpyRecorder = new ScrcpyAudioRecorder();
-            scrcpyRecorder.setOnAudioDataListener((data, length) -> {
-                if (buffer != null) {
-                    buffer.write(data);
-                    notifyCacheUpdate();
-                }
-            });
-            scrcpyRecorder.setOnRecordingStateListener(new ScrcpyAudioRecorder.OnRecordingStateListener() {
-                @Override
-                public void onStateChanged(boolean isRecording) {
-                    running = isRecording;
-                    if (isRecording) {
-                        updateNotification("Scrcpy录音中（不独占麦克风）");
-                    }
-                }
-
-                @Override
-                public void onError(String error) {
-                    // Scrcpy 模式失败，自动回退到传统模式
-                    Toast.makeText(KeepAliveService.this, 
-                        "Scrcpy模式不可用，切换到传统模式: " + error, 
-                        Toast.LENGTH_SHORT).show();
-                    startTraditionalRecording(audioSource);
-                }
-            });
-
-            buffer = new CircularBuffer(cacheSec * bytesPerSec * 2); // 双声道需要更大缓冲区
-            boolean scrcpySuccess = scrcpyRecorder.startRecording();
-            
-            if (scrcpySuccess) {
-                running = true;
-                return;
-            }
+        
+        switch (mode) {
+            case MainActivity.MODE_SCRCPY:
+                // ADB Scrcpy模式：系统级捕获，不占用音频通道
+                startScrcpyRecording(audioSource);
+                break;
+                
+            case MainActivity.MODE_STANDARD:
+            case MainActivity.MODE_ACCESSIBILITY:
+            default:
+                // 标准模式或无障碍模式：传统AudioRecord
+                startTraditionalRecording(audioSource);
+                break;
         }
-
-        // Scrcpy 模式失败，使用传统录音模式
-        startTraditionalRecording(audioSource);
+    }
+    
+    /**
+     * 启动 Scrcpy + FFmpeg 模式录音（不占用音频通道）
+     */
+    private void startScrcpyRecording(int fallbackAudioSource) {
+        if (running) return;
+        
+        scrcpyRecorder = new ScrcpyAudioRecorder();
+        scrcpyRecorder.setOnAudioDataListener((data, length) -> {
+            if (buffer != null) {
+                buffer.write(data);
+                notifyCacheUpdate();
+            }
+        });
+        scrcpyRecorder.setOnRecordingStateListener(new ScrcpyAudioRecorder.OnRecordingStateListener() {
+            @Override
+            public void onStateChanged(boolean isRecording) {
+                running = isRecording;
+                if (isRecording) {
+                    updateNotification("Scrcpy录音中（不独占麦克风）");
+                }
+            }
+            @Override
+            public void onError(String error) {
+                // Scrcpy 模式失败，自动回退到传统模式
+                Toast.makeText(KeepAliveService.this, 
+                    "Scrcpy模式不可用，切换到传统模式: " + error, 
+                    Toast.LENGTH_SHORT).show();
+                startTraditionalRecording(fallbackAudioSource);
+            }
+        });
+        buffer = new CircularBuffer(cacheSec * bytesPerSec * 2); // 双声道需要更大缓冲区
+        boolean scrcpySuccess = scrcpyRecorder.startRecording();
+        
+        if (scrcpySuccess) {
+            running = true;
+        } else {
+            // 立即回退
+            startTraditionalRecording(fallbackAudioSource);
+        }
+    }
+    
+    @Deprecated
+    public void startRecording(int audioSource) {
+        // 兼容旧接口，默认使用无障碍模式
+        startRecordingByMode(MainActivity.MODE_ACCESSIBILITY, audioSource);
     }
 
     /**

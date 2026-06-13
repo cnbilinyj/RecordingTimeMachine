@@ -20,14 +20,24 @@ import android.provider.Settings;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.TextView;
 import android.widget.Toast;
 
 public class MainActivity extends Activity implements View.OnClickListener {
     private static final int REQUEST_RECORD_AUDIO = 1;
+    
+    // 录音模式常量
+    public static final int MODE_STANDARD = 0;      // 标准模式
+    public static final int MODE_ACCESSIBILITY = 1; // 无障碍模式
+    public static final int MODE_SCRCPY = 2;        // ADB Scrcpy模式
+    
     private Button btnStart, btnStop, btnExport;
     private TextView tvStatus, tvCache;
     private EditText etCacheMin;
+    private RadioGroup rgMode;
+    private RadioButton rbStandard, rbAccessibility, rbScrcpy;
     private KeepAliveService recordingService;
     private boolean isBound = false;
     private SharedPreferences prefs;
@@ -78,9 +88,40 @@ public class MainActivity extends Activity implements View.OnClickListener {
         tvStatus = findViewById(R.id.tv_status);
         tvCache = findViewById(R.id.tv_cache);
         etCacheMin = findViewById(R.id.et_cache_min);
+        rgMode = findViewById(R.id.rg_mode);
+        rbStandard = findViewById(R.id.rb_standard);
+        rbAccessibility = findViewById(R.id.rb_accessibility);
+        rbScrcpy = findViewById(R.id.rb_scrcpy);
 
         int savedMin = prefs.getInt("cache_min", 5);
         etCacheMin.setText(String.valueOf(savedMin));
+        
+        // 恢复保存的录音模式
+        int savedMode = prefs.getInt("recording_mode", MODE_ACCESSIBILITY);
+        switch (savedMode) {
+            case MODE_STANDARD:
+                rbStandard.setChecked(true);
+                break;
+            case MODE_ACCESSIBILITY:
+                rbAccessibility.setChecked(true);
+                break;
+            case MODE_SCRCPY:
+                rbScrcpy.setChecked(true);
+                break;
+        }
+        
+        // 模式选择监听
+        rgMode.setOnCheckedChangeListener((group, checkedId) -> {
+            int mode = MODE_ACCESSIBILITY;
+            if (checkedId == R.id.rb_standard) {
+                mode = MODE_STANDARD;
+            } else if (checkedId == R.id.rb_accessibility) {
+                mode = MODE_ACCESSIBILITY;
+            } else if (checkedId == R.id.rb_scrcpy) {
+                mode = MODE_SCRCPY;
+            }
+            prefs.edit().putInt("recording_mode", mode).apply();
+        });
 
         btnStart.setOnClickListener(this);
         btnStop.setOnClickListener(this);
@@ -153,7 +194,7 @@ public class MainActivity extends Activity implements View.OnClickListener {
     public void onClick(View v) {
         int id = v.getId();
         if (id == R.id.btn_start) {
-            checkAccessibility();
+            startRecordingByMode();
         } else if (id == R.id.btn_stop) {
             if (isBound && recordingService != null) {
                 recordingService.stopRecording();
@@ -167,6 +208,43 @@ public class MainActivity extends Activity implements View.OnClickListener {
             } else {
                 Toast.makeText(this, "服务未就绪", Toast.LENGTH_SHORT).show();
             }
+        }
+    }
+    
+    /**
+     * 根据用户选择的模式启动录音
+     */
+    private void startRecordingByMode() {
+        if (!isBound || recordingService == null || recordingService.isRecording()) {
+            return;
+        }
+        
+        int mode = prefs.getInt("recording_mode", MODE_ACCESSIBILITY);
+        
+        switch (mode) {
+            case MODE_STANDARD:
+                // 标准模式：使用MIC，可能冲突
+                recordingService.startRecordingByMode(MODE_STANDARD, MediaRecorder.AudioSource.MIC);
+                btnStart.setEnabled(false);
+                btnStop.setEnabled(true);
+                tvStatus.setText("标准模式录音中");
+                break;
+                
+            case MODE_ACCESSIBILITY:
+                // 无障碍模式：使用VOICE_RECOGNITION，支持并行
+                recordingService.startRecordingByMode(MODE_ACCESSIBILITY, MediaRecorder.AudioSource.VOICE_RECOGNITION);
+                btnStart.setEnabled(false);
+                btnStop.setEnabled(true);
+                tvStatus.setText("无障碍模式录音中");
+                break;
+                
+            case MODE_SCRCPY:
+                // ADB Scrcpy模式：系统级捕获，不占用音频通道
+                recordingService.startRecordingByMode(MODE_SCRCPY, 0);
+                btnStart.setEnabled(false);
+                btnStop.setEnabled(true);
+                tvStatus.setText("ADB Scrcpy模式录音中");
+                break;
         }
     }
 

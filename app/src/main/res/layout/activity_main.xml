@@ -37,6 +37,35 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:text="录音模式"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp"/>
+    <RadioGroup
+        android:id="@+id/rg_mode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginBottom="16dp">
+        <RadioButton
+            android:id="@+id/rb_standard"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="标准模式 (普通录音，可能与其他应用冲突)"/>
+        <RadioButton
+            android:id="@+id/rb_accessibility"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="无障碍模式 (并行录音，支持多应用同时使用麦克风)"/>
+        <RadioButton
+            android:id="@+id/rb_scrcpy"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="ADB Scrcpy模式 (系统级捕获，完全不占用音频通道)"/>
+    </RadioGroup>
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:text="设置"
         android:textSize="18sp"
         android:textStyle="bold"
