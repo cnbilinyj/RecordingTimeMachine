@@ -35,9 +35,11 @@ import java.util.Locale;
 public class KeepAliveService extends Service {
     // ---------- 录音相关 ----------
     private AudioRecord recorder;
+    private ScrcpyAudioRecorder scrcpyRecorder;  // Scrcpy + FFmpeg 录音器
     private CircularBuffer buffer;
     private Thread recordThread;
     private volatile boolean running = false;
+    private volatile boolean useScrcpyMode = true; // 默认使用 Scrcpy 模式
     private int cacheSec = 300;           // 默认5分钟
     private final int sampleRate = 44100;
     private final int bytesPerSec = sampleRate * 2;  // 16bit PCM
@@ -133,11 +135,57 @@ public class KeepAliveService extends Service {
     // ---------- 录音控制方法（供 Activity 调用）----------
     public void startRecording(int audioSource) {
         if (running) return;
+
+        // 优先尝试 Scrcpy + FFmpeg 模式（不占用音频通道）
+        if (useScrcpyMode) {
+            scrcpyRecorder = new ScrcpyAudioRecorder();
+            scrcpyRecorder.setOnAudioDataListener((data, length) -> {
+                if (buffer != null) {
+                    buffer.write(data);
+                    notifyCacheUpdate();
+                }
+            });
+            scrcpyRecorder.setOnRecordingStateListener(new ScrcpyAudioRecorder.OnRecordingStateListener() {
+                @Override
+                public void onStateChanged(boolean isRecording) {
+                    running = isRecording;
+                    if (isRecording) {
+                        updateNotification("Scrcpy录音中（不独占麦克风）");
+                    }
+                }
+
+                @Override
+                public void onError(String error) {
+                    // Scrcpy 模式失败，自动回退到传统模式
+                    Toast.makeText(KeepAliveService.this, 
+                        "Scrcpy模式不可用，切换到传统模式: " + error, 
+                        Toast.LENGTH_SHORT).show();
+                    startTraditionalRecording(audioSource);
+                }
+            });
+
+            buffer = new CircularBuffer(cacheSec * bytesPerSec * 2); // 双声道需要更大缓冲区
+            boolean scrcpySuccess = scrcpyRecorder.startRecording();
+            
+            if (scrcpySuccess) {
+                running = true;
+                return;
+            }
+        }
+
+        // Scrcpy 模式失败，使用传统录音模式
+        startTraditionalRecording(audioSource);
+    }
+
+    /**
+     * 传统录音模式（AudioRecord 直接录音）
+     */
+    private void startTraditionalRecording(int audioSource) {
         // 请求音频焦点
         int focusResult = audioManager.requestAudioFocus(focusChangeListener,
                 AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
         if (focusResult != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-            // 没有焦点也可以继续录音，但建议给用户提示
+            // 没有焦点也可以继续录音
         }
 
         int channelConfig = AudioFormat.CHANNEL_IN_MONO;
@@ -169,13 +217,21 @@ public class KeepAliveService extends Service {
         });
         recordThread.start();
 
-        // 更新通知栏内容（可选）
+        // 更新通知栏内容
         updateNotification("录音中...");
     }
 
     public void stopRecording() {
         if (!running) return;
         running = false;
+        
+        // 停止 Scrcpy 录音器
+        if (scrcpyRecorder != null) {
+            scrcpyRecorder.stopRecording();
+            scrcpyRecorder = null;
+        }
+        
+        // 停止传统录音器
         if (recordThread != null) {
             try { recordThread.join(100); } catch (InterruptedException e) { }
             recordThread = null;
