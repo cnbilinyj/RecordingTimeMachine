@@ -186,6 +186,22 @@ public class KeepAliveService extends Service {
                     Toast.LENGTH_SHORT).show();
                 startTraditionalRecording(fallbackAudioSource);
             }
+            @Override
+            public void onAdbDeviceConnected(String deviceId) {
+                Toast.makeText(KeepAliveService.this, 
+                    "ADB设备已连接: " + deviceId, 
+                    Toast.LENGTH_SHORT).show();
+            }
+            @Override
+            public void onAdbDeviceDisconnected() {
+                Toast.makeText(KeepAliveService.this, 
+                    "ADB设备已断开", 
+                    Toast.LENGTH_SHORT).show();
+                // 设备断开时停止录音，或尝试重连
+                if (running) {
+                    stopRecording();
+                }
+            }
         });
         buffer = new CircularBuffer(cacheSec * bytesPerSec * 2); // 双声道需要更大缓冲区
         boolean scrcpySuccess = scrcpyRecorder.startRecording();
